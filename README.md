@@ -27,3 +27,6 @@ Telegram bot, data backend server, and esp32_termosensor firmware(micropytohn)
     1. Язык разработки MicroPython
     2. Протокол общения с датчиками - 1 wire;
     3. Протокол общения с системой - MODBUS TCP, роль - salve(сервер);
+
+
+### Структура конфигурации backend
