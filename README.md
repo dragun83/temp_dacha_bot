@@ -35,18 +35,36 @@ Telegram bot, data backend server, and esp32_termosensor firmware(micropytohn)
 
 
 
-    ```
-    {
-    "api_server": {
-        "server_address": "0.0.0.0",
-        "server_port": 20000
+        ```
+        {
+        "api_server": {
+            "server_address": "0.0.0.0",
+            "server_port": 20000
+            }
+        "modbus_parameters":{
+            "query_freq": <частота опрос в сек.>
+            "read_timeout": <таймаут соединения с датчиком в сек.>
         }
-    "modbus_sensors":{
-        <ip_address>:{
-            "tcp_port": <tcp_port>,
-            "modbus_offset": [<modbus_offset_1>, <modbus_offset_2>, <modbuss_offset_n>]
+        "modbus_sensors":{
+            <ip_address>:{
+                "active": true\false (boolean)
+                "tcp_port": <tcp_port>,
+                "modbus_offsets": [<modbus_offset_1>, <modbus_offset_2>, <modbuss_offset_n>]
+                }
             }
         }
-    }
-    ```
+        ```
+    
+### Структура словаря оперативных данных
 
+```
+{
+    <ip_address>:{
+        "data_is_valid": True\Fals (bool)
+        <modbus_offset_1>:<temperature_value>,
+        <modbus_offset_2>:<temperature_value>,
+        ...
+        <modbus_offset_n>:<temperature_value>
+    }
+}
+```
