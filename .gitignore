@@ -1,3 +1,4 @@
 *.bkp
 $*
 .conf
+mytests*.py

@@ -26,7 +26,24 @@ Telegram bot, data backend server, and esp32_termosensor firmware(micropytohn)
 ### Прошивка для преобразователя (ESP32)
     1. Язык разработки MicroPython
     2. Протокол общения с датчиками - 1 wire;
-    3. Протокол общения с системой - MODBUS TCP, роль - salve(сервер);
+    3. Протокол общения с системой - MODBUS TCP, роль - slave(сервер);
 
 
 ### Структура конфигурации backend
+    Конфиг файл представляет из себя JSON файл в котором для каждой секции конфигурации содержится свой вложеный словарь с параметрами (и\или еще одна секция при необходимости). Файл может быть сгенерирован или перезаписан программой при условии установки ключа "-i True"
+
+    ```
+    {
+    "api_server": {
+        "server_address": "0.0.0.0",
+        "server_port": 20000
+        }
+    "modbus_sensors":{
+        <ip_address>:{
+            "tcp_port": <tcp_port>,
+            "modbus_offset": [<modbus_offset_1>, <modbus_offset_2>, <modbuss_offset_n>]
+            }
+        }
+    }
+    ```
+
