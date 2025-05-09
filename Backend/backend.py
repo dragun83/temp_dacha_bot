@@ -135,7 +135,7 @@ def main():
         CONFIG_DICT = read_config_json(CONFIG_FILE_PATH)
         print("Запускаем API сервер")
         try:
-            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_addres'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
+            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_address'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
         finally:
             write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
     elif args.init:
@@ -147,7 +147,7 @@ def main():
         }
         print("Запускаем API сервер")
         try:
-            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_addres'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
+            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_address'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
         finally:
             write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
 
