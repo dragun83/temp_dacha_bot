@@ -14,8 +14,9 @@ import json
 import os
 from pydantic import BaseModel
 from pymodbus.client import AsyncModbusTcpClient
-from pymodbus.payload import BinaryPayloadDecoder
-from pymodbus.constants import Endian
+from pymodbus import exceptions as py_exceptions
+#from pymodbus.payload import BinaryPayloadDecoder
+#from pymodbus.constants import Endian
 import signal
 from fastapi import FastAPI
 import uvicorn
@@ -24,7 +25,7 @@ import uvicorn
 # TODO: AI говорит что тут можно применить Depends... Почитать и проверить это (после MVP) 
 
 CONFIG_DICT = {} #Словарь с конфигурацией
-CONFIG_FILE_PATH = ''   #Путь к конфигурационному файлу
+CONFIG_FILE_PATH = '' #Путь к конфигурационному файлу
 DATA_DICT = {} #Словарь с оперативными данными
 
 
@@ -80,12 +81,22 @@ def validate_config(config_file_path: str) -> bool:
 async def read_modbus_data(ip, port, mb_offset) -> float:
     """
     Функция читает данные с датчика по MODBUS, декодирует и возвращает значение. Возвращает None в случае ошибки подключения.
+    Args:
+        ip(str): Адрес датчика 
+        port(int): TCP порт датчика
+        mb_offset: Адрес начального регистра MODBUS
     """
-    conn = AsyncModbusTcpClient(host=ip, port=port, timeout=CONFIG_DICT.get("modbus_parameters").get("read_timeout"))
-    if not await conn.connect():
-        raise ConnectionError("Не удается соединиться!")
-    print("Соедининение установленио!")
-
+    async with AsyncModbusTcpClient(host=ip, port=port, timeout=CONFIG_DICT.get("modbus_parameters").get("read_timeout")) as connection: 
+        response = await connection.read_holding_registers(address=mb_offset, count=2, slave=1)
+        if response.isError():
+            print("Не удалось прочитать данные!")
+            return None
+        return connection.convert_from_registers(
+            response.registers,
+            data_type=connection.DATATYPE.FLOAT32,
+            word_order="little"
+        )
+        
 
 async def mesure_temperature() -> dict:
     """
@@ -98,7 +109,18 @@ async def mesure_temperature() -> dict:
                 if CONFIG_DICT.get("modbus_sensors").get(sensor_ip).get("active") is True:
                     tcp_port = CONFIG_DICT.get("modbus_sensors").get(sensor_ip).get("tcp_port")
                     for modbus_offset in CONFIG_DICT.get("modbus_sensors").get(sensor_ip).get("modbus_offsets"):
-                       await read_modbus_data(sensor_ip, tcp_port, modbus_offset)
+                      try:
+                        async with AsyncModbusTcpClient(host=sensor_ip, port=tcp_port, timeout=CONFIG_DICT.get("modbus_parameters").get("read_timeout")) as connection:
+                            response = await connection.read_holding_registers(address=modbus_offset, count=2, slave=1)
+                            print(f"Показания датчика IP : {sensor_ip} MODBUS OFFSET: {modbus_offset} - {connection.convert_from_registers(
+                                response.registers,
+                                data_type=connection.DATATYPE.FLOAT32,
+                                word_order='little'
+                            )}")
+                      except py_exceptions.ConnectionException:
+                          print(f"Ошибка подключения к датчику {sensor_ip}")
+                          continue
+                                
                 else:
                     print(f"Датчик {sensor_ip} не активен")
             print("Датчики опрошены")

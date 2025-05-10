@@ -61,10 +61,10 @@ Telegram bot, data backend server, and esp32_termosensor firmware(micropytohn)
 {
     <ip_address>:{
         "data_is_valid": True\Fals (bool)
-        <modbus_offset_1>:<temperature_value>,
-        <modbus_offset_2>:<temperature_value>,
+        <modbus_offset_1>:{<timestamp>:<temperature_value>, "valid_flag":<bool>},
+        <modbus_offset_2>:{<timestamp>:<temperature_value>}, "valid_flag":<bool>,
         ...
-        <modbus_offset_n>:<temperature_value>
+        <modbus_offset_n>:{<timestamp>:<temperature_value>, "valid_flag":<bool>}
     }
 }
 ```
