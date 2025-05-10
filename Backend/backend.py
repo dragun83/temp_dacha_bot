@@ -4,18 +4,23 @@
 # TODO: +Реализовать сохранение конфигов при выходе (штатном и не штатном) из программы
 # TODO: +Реализовать API (flask\FastAPI)
 # TODO: +Добавить механизм добавления датчика через API
-# TODO: + Реализовать функцию сбора данных с датчика.
+# TODO: +Реализовать функцию сбора данных с датчика.
+# TODO: +Реализовать функционал получения оперативных данных через API
+# TODO: Реализовать функционал сохранения оперативных данных в СУБД
+# TODO: Реализовать функционал получения исторических данных из СУБД через API
 # TODO: (Не нужно.)Реализовать механизм отключения датчика в случае ошибки чтения информации(с ручной активацией)
-# TODO: Продумать привязку к переменным окружения для запуска в контейнере
+# TODO: (После MVP)Продумать привязку к переменным окружения для запуска в контейнере
 
 import asyncio
 import argparse
+from datetime import datetime
 import json
 import os
+import signal
+import time
 from pydantic import BaseModel
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus import exceptions as py_exceptions
-import signal
 from fastapi import FastAPI
 import uvicorn
 
@@ -76,24 +81,6 @@ def validate_config(config_file_path: str) -> bool:
     else:
         return False
 
-async def read_modbus_data(ip, port, mb_offset) -> float:
-    """
-    Функция читает данные с датчика по MODBUS, декодирует и возвращает значение. Возвращает None в случае ошибки подключения.
-    Args:
-        ip(str): Адрес датчика 
-        port(int): TCP порт датчика
-        mb_offset: Адрес начального регистра MODBUS
-    """
-    async with AsyncModbusTcpClient(host=ip, port=port, timeout=CONFIG_DICT.get("modbus_parameters").get("read_timeout")) as connection: 
-        response = await connection.read_holding_registers(address=mb_offset, count=2, slave=1)
-        if response.isError():
-            print("Не удалось прочитать данные!")
-            return None
-        return connection.convert_from_registers(
-            response.registers,
-            data_type=connection.DATATYPE.FLOAT32,
-            word_order="little"
-        )
         
 
 async def mesure_temperature() -> dict:
@@ -110,18 +97,20 @@ async def mesure_temperature() -> dict:
                       try:
                         async with AsyncModbusTcpClient(host=sensor_ip, port=tcp_port, timeout=CONFIG_DICT.get("modbus_parameters").get("read_timeout")) as connection:
                             response = await connection.read_holding_registers(address=modbus_offset, count=2, slave=1)
-                            print(f"Показания датчика IP : {sensor_ip} MODBUS OFFSET: {modbus_offset} - {connection.convert_from_registers(
+                            temperature = connection.convert_from_registers(
                                 response.registers,
                                 data_type=connection.DATATYPE.FLOAT32,
                                 word_order='little'
-                            )}")
-                      except py_exceptions.ConnectionException:
+                            )
+                            time_stamp = time.time()
+                            DATA_DICT.setdefault(sensor_ip, {}).setdefault(modbus_offset, {}).update({time_stamp:temperature})
+                            print(f"Показания датчика IP : {sensor_ip} MODBUS OFFSET: {modbus_offset} - {temperature}")
+                      except( py_exceptions.ConnectionException, py_exceptions.ModbusIOException):
                           print(f"Ошибка подключения к датчику {sensor_ip}")
                           continue
                                 
                 else:
                     print(f"Датчик {sensor_ip} не активен")
-            print("Датчики опрошены")
         else:
             print("Не указано ни одного датчика")
         await asyncio.sleep(CONFIG_DICT.get('modbus_parameters').get('query_freq'))
@@ -139,6 +128,13 @@ async def api_test():
     Тестовый хук для проверки работы API
     """
     return {"message":"It is working!"}
+
+@api.get("/oper")
+async def get_oper_data():
+    """
+    Возвращаем словарь оперативных данных целиком
+    """
+    return DATA_DICT
 
 class SensorConfig(BaseModel):
     """
