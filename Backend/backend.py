@@ -4,8 +4,8 @@
 # TODO: +Реализовать сохранение конфигов при выходе (штатном и не штатном) из программы
 # TODO: +Реализовать API (flask\FastAPI)
 # TODO: +Добавить механизм добавления датчика через API
-# TODO: Реализовать функцию сбора данных с датчика.
-# TODO: Реализовать механизм отключения датчика в случае ошибки чтения информации(с ручной активацией)
+# TODO: + Реализовать функцию сбора данных с датчика.
+# TODO: (Не нужно.)Реализовать механизм отключения датчика в случае ошибки чтения информации(с ручной активацией)
 # TODO: Продумать привязку к переменным окружения для запуска в контейнере
 
 import asyncio
@@ -15,8 +15,6 @@ import os
 from pydantic import BaseModel
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus import exceptions as py_exceptions
-#from pymodbus.payload import BinaryPayloadDecoder
-#from pymodbus.constants import Endian
 import signal
 from fastapi import FastAPI
 import uvicorn
