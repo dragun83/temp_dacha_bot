@@ -1,1 +1,1 @@
-## [Мануале(https://hub.docker.com/_/postgres)]
+## [Мануале](https://hub.docker.com/_/postgres)
