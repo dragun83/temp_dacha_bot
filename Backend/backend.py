@@ -7,7 +7,7 @@
 # TODO: +Реализовать функцию сбора данных с датчика.
 # TODO: +Реализовать функционал получения оперативных данных через API
 # TODO: +Добавить секцию с настройками доступа к СУБД в конфигурацию и arparse
-# TODO: Реализовать функционал сохранения оперативных данных в СУБД, а так же очистку словаря оперативных данных после сохранения в СУБД
+# TODO: +Реализовать функционал сохранения оперативных данных в СУБД, а так же очистку словаря оперативных данных после сохранения в СУБД
 # TODO: Реализовать функционал получения исторических данных из СУБД через API
 # TODO: (Не нужно.)Реализовать механизм отключения датчика в случае ошибки чтения информации(с ручной активацией)
 # TODO: (После MVP)Продумать привязку к переменным окружения для запуска в контейнере
@@ -89,17 +89,28 @@ async def save_oper_data_to_history():
     Функция сохраняет данные из глобального словаря оперативных данных в БД с историческими данными, очищает оперативный словарь,
      а так-же создает БД в случае если она отсутствует.
     """
-    async with asyncpg.connect(host=CONFIG_DICT.get("db_params").get("db_host"), 
-                               database=CONFIG_DICT.get("db_params").get("db_name"),
-                               user=CONFIG_DICT.get("db_params").get("db_user"),
-                               password=CONFIG_DICT.get("db_params").get("db_password")
-                              ) as db_conn:
-        while True:
-            for sensor_ip in DATA_DICT.keys():
-                for modbus_offset in DATA_DICT.get(sensor_ip).keys():
-                    for timestamp, temperature_value in DATA_DICT.get(sensor_ip).get(modbus_offset).items():
-                        print (f"В БД попадает : {timestamp}|{sensor_ip}|{modbus_offset}|{temperature_value}")
-            await asyncio.sleep(CONFIG_DICT.get("db_params").get("db_write_period"))
+    while True:
+        async with asyncpg.create_pool(host=CONFIG_DICT.get("db_params").get("db_host"), 
+                                database=CONFIG_DICT.get("db_params").get("db_name"),
+                                user=CONFIG_DICT.get("db_params").get("db_user"),
+                                password=CONFIG_DICT.get("db_params").get("db_password"),
+                                min_size=1,
+                                max_size=10
+                                ) as db_pool:
+            
+            async with db_pool.acquire() as connection:
+                data_to_insert = []
+                for sensor_ip in DATA_DICT.keys():
+                    for modbus_offset in DATA_DICT.get(sensor_ip).keys():
+                        for timestamp, temperature_value in DATA_DICT.get(sensor_ip).get(modbus_offset).items():
+                            data_to_insert.append((datetime.fromtimestamp(timestamp), sensor_ip, modbus_offset, temperature_value))
+                if data_to_insert:                    
+                    await connection.executemany('''
+                            INSERT INTO historic_temperature (software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value)
+                            VALUES ($1, $2, $3, $4)
+                        ''', data_to_insert)
+        DATA_DICT.clear()
+        await asyncio.sleep(CONFIG_DICT.get("db_params").get("db_write_period"))
 
 async def mesure_temperature():
     """

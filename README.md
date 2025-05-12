@@ -3,7 +3,7 @@
 Состоит из:
 1. Бекэнд - pytohn + mysql
 2. Фронтенд - telegram-бот (python)
-3. Прошивка для esp32 - источник данных по протоколу MODBUS TCP
+3. Прошивка для esp32/esp8266 - источник данных по протоколу MODBUS TCP
 Telegram bot, data backend server, and esp32_termosensor firmware(micropytohn)
 
 ## Попробую что-то типа ТЗ наваять тут...
