@@ -6,6 +6,7 @@
 # TODO: +Добавить механизм добавления датчика через API
 # TODO: +Реализовать функцию сбора данных с датчика.
 # TODO: +Реализовать функционал получения оперативных данных через API
+# TODO: +Добавить секцию с настройками доступа к СУБД в конфигурацию и arparse
 # TODO: Реализовать функционал сохранения оперативных данных в СУБД, а так же очистку словаря оперативных данных после сохранения в СУБД
 # TODO: Реализовать функционал получения исторических данных из СУБД через API
 # TODO: (Не нужно.)Реализовать механизм отключения датчика в случае ошибки чтения информации(с ручной активацией)
@@ -18,6 +19,7 @@ import json
 import os
 import signal
 import time
+import asyncpg
 from pydantic import BaseModel
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus import exceptions as py_exceptions
@@ -35,6 +37,7 @@ DATA_DICT = {} #Словарь с оперативными данными
 api = FastAPI()
 
 def shutdown_handler(*args):
+    # TODO: Дделать обработчик для корректного завершения всех корутин.
     write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
     raise SystemExit(0)
 
@@ -81,14 +84,28 @@ def validate_config(config_file_path: str) -> bool:
     else:
         return False
 
-        
-
-async def mesure_temperature() -> dict:
+async def save_oper_data_to_history():
     """
-    Функция опрашивает датчики по MODBUS и возвращает словарь с показаниями
+    Функция сохраняет данные из глобального словаря оперативных данных в БД с историческими данными, очищает оперативный словарь,
+     а так-же создает БД в случае если она отсутствует.
+    """
+    async with asyncpg.connect(host=CONFIG_DICT.get("db_params").get("db_host"), 
+                               database=CONFIG_DICT.get("db_params").get("db_name"),
+                               user=CONFIG_DICT.get("db_params").get("db_user"),
+                               password=CONFIG_DICT.get("db_params").get("db_password")
+                              ) as db_conn:
+        while True:
+            for sensor_ip in DATA_DICT.keys():
+                for modbus_offset in DATA_DICT.get(sensor_ip).keys():
+                    for timestamp, temperature_value in DATA_DICT.get(sensor_ip).get(modbus_offset).items():
+                        print (f"В БД попадает : {timestamp}|{sensor_ip}|{modbus_offset}|{temperature_value}")
+            await asyncio.sleep(CONFIG_DICT.get("db_params").get("db_write_period"))
+
+async def mesure_temperature():
+    """
+    Функция опрашивает датчики по MODBUS и записывает в словарь  показания
     """
     while True:
-        # TODO: Написать алгоритм опроса датчиков по MODBUS с выгрузкой результатов в глобальный словарь.
         if CONFIG_DICT.get("modbus_sensors") is not None:
             for sensor_ip in CONFIG_DICT.get("modbus_sensors").keys():
                 if CONFIG_DICT.get("modbus_sensors").get(sensor_ip).get("active") is True:
@@ -120,6 +137,7 @@ async def mesure_temperature() -> dict:
 async def startup_sequence():
     #pass
     asyncio.create_task(mesure_temperature())
+    asyncio.create_task(save_oper_data_to_history())
 
 
 @api.get("/")
@@ -186,30 +204,36 @@ def main():
     global CONFIG_DICT, CONFIG_FILE_PATH
     argparser=argparse.ArgumentParser(description="Backend service for home automation")
     argparser.add_argument('-c', '--config-file', type=str, required=False, default='Conf/backend.cfg', help="Путь к конфигурационному файлу.")
-    argparser.add_argument('-i', '--init', type=bool, default=False, help="Очистить и пересоздать конфигурационный файл. Данные о датчиках будут удалены!")
+    argparser.add_argument('-i', '--init', action="store_true", help="Очистить и пересоздать конфигурационный файл. Данные о датчиках будут удалены!")
     argparser.add_argument("--api-host", type=str, required=False,default="0.0.0.0", help="Адрес сервера API. По умолчанию \"0.0.0.0\"")
     argparser.add_argument("--api-port", type=int, required=False,default=5000, help="Порт сервера API. По умолчанию \"5000\"")
     argparser.add_argument("--modbus-query-freq", type=int, required=False,default=5, help="Частота опроса MODBUS в секундах. По умолчанию \"5\" сек.")
     argparser.add_argument("--modbus-conn-timeout", type=int, required=False,default=5, help="Таймаут подключения MODBUS в секундах. По умолчанию \"5\" сек.")
+    argparser.add_argument("--db-host", type=str, required=False,default="localhost", help="Адрес сервера СУБД Postgresql  \"localhost\"")
+    argparser.add_argument("--db-name", type=str, required=False,default="dachabot_db", help="Имя базы данных. По умолчанию \"dachabot_db\"")
+    argparser.add_argument("--db-user", type=str, required=False,default="postgres", help="Имя пользователя БД. По умолчанию \"postgres\" сек.")
+    argparser.add_argument("--db-password", type=str, required=False,default="Qwe12345", help="Пароль БД")
+    argparser.add_argument("--db-write-period", type=int, required=False,default=30, help="Частота записи данных в БД. По умолчанию \"30\" сек.")
 
     args = argparser.parse_args()
     CONFIG_FILE_PATH = args.config_file
-    if validate_config(CONFIG_FILE_PATH):
-        CONFIG_DICT = read_config_json(CONFIG_FILE_PATH)
-        print("Запускаем API сервер")
-        try:
-            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_address'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
-        finally:
-            write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
-    elif args.init:
+    if args.init:
+        print("Переинициализация конфигурации")
         CONFIG_DICT = {
             'api_server':{
                 'server_address': args.api_host,
                 'server_port': args.api_port
             },
             'modbus_parameters':{
-                "query_freq":args.modbus_query_freq
-                }
+                'query_freq':args.modbus_query_freq
+                },
+            'db_params':{
+                'db_host':args.db_host,
+                'db_name':args.db_name,
+                'db_user':args.db_user,
+                'db_password':args.db_password,
+                'db_write_period':args.db_write_period
+            }
         }
         print("Запускаем API сервер")
         try:
@@ -217,6 +241,13 @@ def main():
         finally:
             write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
 
+    elif validate_config(CONFIG_FILE_PATH):
+        CONFIG_DICT = read_config_json(CONFIG_FILE_PATH)
+        print("Запускаем API сервер")
+        try:
+            uvicorn.run(api, host = CONFIG_DICT.get('api_server').get('server_address'),port=int(CONFIG_DICT.get('api_server').get('server_port')))
+        finally:
+            write_config_json(CONFIG_DICT, CONFIG_FILE_PATH)
 
     else:
         raise FileExistsError(f"Файл {CONFIG_FILE_PATH} не существует или поврежден. Выполните запуск с ключем -i True")
