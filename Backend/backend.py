@@ -31,7 +31,9 @@ import uvicorn
 
 CONFIG_DICT = {} #Словарь с конфигурацией
 CONFIG_FILE_PATH = '' #Путь к конфигурационному файлу
-DATA_DICT = {} #Словарь с оперативными данными
+DATA_DICT = {} #Словарь с оперативными данными (Буфер данных перед записью в СУБД)
+LAST_DATA_DICT = {} #Словарь с последними измерениями (обновляется при каждом измереении)
+DB_POOL = None #Пул соединений с СУБД
 
 
 api = FastAPI()
@@ -90,25 +92,17 @@ async def save_oper_data_to_history():
      а так-же создает БД в случае если она отсутствует.
     """
     while True:
-        async with asyncpg.create_pool(host=CONFIG_DICT.get("db_params").get("db_host"), 
-                                database=CONFIG_DICT.get("db_params").get("db_name"),
-                                user=CONFIG_DICT.get("db_params").get("db_user"),
-                                password=CONFIG_DICT.get("db_params").get("db_password"),
-                                min_size=1,
-                                max_size=10
-                                ) as db_pool:
-            
-            async with db_pool.acquire() as connection:
-                data_to_insert = []
-                for sensor_ip in DATA_DICT.keys():
-                    for modbus_offset in DATA_DICT.get(sensor_ip).keys():
-                        for timestamp, temperature_value in DATA_DICT.get(sensor_ip).get(modbus_offset).items():
-                            data_to_insert.append((datetime.fromtimestamp(timestamp), sensor_ip, modbus_offset, temperature_value))
-                if data_to_insert:                    
-                    await connection.executemany('''
-                            INSERT INTO historic_temperature (software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value)
-                            VALUES ($1, $2, $3, $4)
-                        ''', data_to_insert)
+        async with DB_POOL.acquire() as connection:
+            data_to_insert = []
+            for sensor_ip in DATA_DICT.keys():
+                for modbus_offset in DATA_DICT.get(sensor_ip).keys():
+                    for timestamp, temperature_value in DATA_DICT.get(sensor_ip).get(modbus_offset).items():
+                        data_to_insert.append((datetime.fromtimestamp(timestamp), sensor_ip, modbus_offset, temperature_value))
+            if data_to_insert:                    
+                await connection.executemany('''
+                        INSERT INTO historic_temperature (software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value)
+                        VALUES ($1, $2, $3, $4)
+                    ''', data_to_insert)
         DATA_DICT.clear()
         await asyncio.sleep(CONFIG_DICT.get("db_params").get("db_write_period"))
 
@@ -132,6 +126,7 @@ async def mesure_temperature():
                             )
                             time_stamp = time.time()
                             DATA_DICT.setdefault(sensor_ip, {}).setdefault(modbus_offset, {}).update({time_stamp:temperature})
+                            LAST_DATA_DICT.setdefault(sensor_ip, {}).setdefault(modbus_offset, {}).update({"last_temperature_value":temperature})
                             print(f"Показания датчика IP : {sensor_ip} MODBUS OFFSET: {modbus_offset} - {temperature}")
                       except( py_exceptions.ConnectionException, py_exceptions.ModbusIOException):
                           print(f"Ошибка подключения к датчику {sensor_ip}")
@@ -147,6 +142,14 @@ async def mesure_temperature():
 # TODO: Отрефактрить и перепесать с учетом того что декоратор depricated (после MVP!)
 async def startup_sequence():
     #pass
+    global DB_POOL
+    DB_POOL = await asyncpg.create_pool(host=CONFIG_DICT.get("db_params").get("db_host"), 
+                                database=CONFIG_DICT.get("db_params").get("db_name"),
+                                user=CONFIG_DICT.get("db_params").get("db_user"),
+                                password=CONFIG_DICT.get("db_params").get("db_password"),
+                                min_size=1,
+                                max_size=10
+                                )
     asyncio.create_task(mesure_temperature())
     asyncio.create_task(save_oper_data_to_history())
 
@@ -164,6 +167,13 @@ async def get_oper_data():
     Возвращаем словарь оперативных данных целиком
     """
     return DATA_DICT
+
+@api.get("/curren_temp/")
+async def get_current_temp():
+    """
+    Возвращаем словарь текущих показаний
+    """
+    return LAST_DATA_DICT
 
 class SensorConfig(BaseModel):
     """
@@ -210,6 +220,19 @@ async def get_sensors_list():
     Возвращает конфигурацию. Функция для дебага!
     """
     return CONFIG_DICT
+
+@api.get("/history/{ip}/{modbus_offset}")
+async def get_history_data(ip: str, modbus_offset: int):
+    """
+    Функция выбирает из БД исторические данные. По IP и MODBUS OFFSEET. Возвращает выборку (JSON).
+    """
+    async with DB_POOL.acquire() as db_con:
+        query = """SELECT software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value FROM historic_temperature
+                    WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2"""
+        params = [ip, modbus_offset]
+        result = await db_con.fetch(query, *params)
+    return result
+
 
 def main():
     global CONFIG_DICT, CONFIG_FILE_PATH
