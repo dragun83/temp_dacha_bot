@@ -5,10 +5,10 @@
 # TODO: +Реализовать получение текущей температуры со всех датчиков
 # TODO: +Реализовать получение информации о конфигурации датчиков
 # TODO: +Реализовать добавление и изменение датчиков
-# TODO: Реализовать получение текущей температуры с одного датчика
+# TODO: +Реализовать получение текущей температуры с одного датчика
 # TODO: Реализовать получение исторических данных с конкретного датчика 
 #       за фиксированные промежутки (последний час, последнийе сутки, последняя неделя, последний месяц)
-# TODO: Реализовать удалени датчиков по IP
+# TODO: +Реализовать удалени датчиков по IP
 # TODO: Реализовать хранение данных о конматах и привязку датчиков к комнатах.
 
 import httpx
@@ -39,8 +39,10 @@ from telegram.ext import (
     ADD_SENSOR_PORT,
     ADD_SENSOR_OFFSET,
     ADD_SENSOR_ACTIVITY,
-    ADD_SENSOR_CONFIRM
-) = range(10)
+    ADD_SENSOR_CONFIRM,
+    DEL_SENSOR_IP,
+    DEL_SENSOR_CONFIRM
+) = range(12)
 
 BACKEND_BASE_URL = "http://localhost:22222"
 TELEGRAM_TOKEN = ""
@@ -48,7 +50,7 @@ TELEGRAM_TOKEN = ""
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO) #Надо понизить уровень логирования.
 logger = logging.getLogger(__name__)
 
-# Клавиатуры
+#Клавиатуры
 def main_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
@@ -68,7 +70,7 @@ def sensors_control_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["3.1 Список датчиков", "3.2 Добавить датчик"],
-            ["Назад"]
+            ["3.3 Удалить датчик", "Назад"]
         ],
         resize_keyboard=True
     )
@@ -80,9 +82,18 @@ def confirm_keyboard():
         one_time_keyboard=True
     )
 
+def period_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["За последний час", "За последний день\n(с 0 часов)"],
+            ["За последние 24 часа","За последнюю неделю"],
+            ["За последний месяц","Назад"]
+         ],
+         resize_keyboard=True,
+         one_time_keyboard=True
+    )
 
-
-# Асинхронные обработчики
+#Обработчики
 async def start(update: Update, context):
     await update.message.reply_text(
         "Главное меню:",
@@ -122,27 +133,51 @@ async def handle_current_temp_all(update: Update, context):
         )
     return MAIN_MENU
 
-async def handle_current_temp_one(update: Update, context):
-    await update.message.reply_text("Введите IP датчика и modbus offset через запятую")
+async def handle_current_temp_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите IP датчика и modbus offset через \":\"")
     return CURRENT_TEMP_ONE
 
-async def handle_sensor_id_input(update: Update, context):
-    sensor_id = update.message.text
-    # Здесь ваш асинхронный запрос к датчику (например, через aiomodbus)
-    await update.message.reply_text(
-        f"Температура с датчика {sensor_id}: 24.7°C",
-        reply_markup=main_menu_keyboard()
-    )
-    return MAIN_MENU
+async def handle_current_temp_one_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        ip, modbus_offset = update.message.text.strip().split(':')
+    except ValueError:
+        await update.message.reply_text(
+                f"⚠️ Не верно введены IP и modbus offset (пример: 192.168.1.1:100)",
+                reply_markup=main_menu_keyboard()
+            )
+        return MAIN_MENU
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url=f"{BACKEND_BASE_URL}/current_temp/")
+    if response.status_code == 200:
+        temp_value = response.json().get(ip, {}).get(modbus_offset, {}).get('last_temperature_value')
+        if temp_value is not None:
+            await update.message.reply_text(
+                f"🌡 Показания датчика {ip}:{modbus_offset} = {temp_value} ℃",
+                reply_markup=main_menu_keyboard()
+            )
+            return MAIN_MENU
+        else:
+            await update.message.reply_text(
+                f"⚠️ Показания датчика {ip}:{modbus_offset} не найдены. ⚠️ ",
+                reply_markup=main_menu_keyboard()
+            )
+            return MAIN_MENU
+    else:
+        await update.message.reply_text(
+            f"❌ Возникла ошибка при получении данных",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
 
-async def cancel(update: Update, context):
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     await update.message.reply_text(
         "Действие отменено.",
         reply_markup=main_menu_keyboard()
     )
     return MAIN_MENU
 
-async def back(update: Update, context):
+async def back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Возвращаюсь в главное меню.",
         reply_markup=main_menu_keyboard()
@@ -248,6 +283,52 @@ async def add_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return MAIN_MENU
 
+async def del_sensor_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Вводим и записываем в user_data IP адрес сенсора для удаления
+    """
+    ip = update.message.text
+    if ip == "3.3 Удалить датчик":
+        await update.message.reply_text("Введите IP адрес датчика для удаления.")
+        return DEL_SENSOR_IP
+    elif not all(part.isdigit() and 0 <= int(part) <= 255 for part in ip.split('.')):
+        await update.message.reply_text("IP адрес указан неверно. Проверьте! (напр. 192.168.1.1)")
+        return DEL_SENSOR_IP
+    else:
+        context.user_data['del_ip'] = ip
+        await update.message.reply_text(
+            f"Вы дествительн хотите удалить датчик {context.user_data['del_ip']}",
+            reply_markup=confirm_keyboard()
+        )
+        return DEL_SENSOR_CONFIRM
+
+async def del_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Функция вызывается после подтверждения удаления датчика. Выполняет API запрос для удаления датчика и возвращает нас в Главное Меню.
+    """
+    ip = context.user_data['del_ip']
+    async with httpx.AsyncClient() as client:
+        response = await client.delete(url=f"{BACKEND_BASE_URL}/sensor/{ip}")
+    if response.status_code == 200:
+        await update.message.reply_text(
+            f"🗑️ Датчик {ip} успешно  удален.",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
+    else:
+        await update.message.reply_text(
+            f"❌ При удалении датчика {ip} возникла ошибка.",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
+    
+async def get_hist_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message.text
+    if message == "2. История измерений":
+        await update.message.reply_text(
+            "Введите адрес датчика в формате <IP адрес>:<modbus offset>. Например: 192.168.1.1:100",
+        )
+        return HISTORY_PERIOD
 
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -257,6 +338,7 @@ def main():
         states={
             MAIN_MENU: [
                 MessageHandler(filters.Regex("^1. Текущая температура$"), current_temp_menu),
+                MessageHandler(filters.Regex("^2. История измерений$"), get_hist_data),
                 MessageHandler(filters.Regex("^3. Управление датчиками$"), config_menu),
             ],
             CURRENT_TEMP_ALL: [
@@ -265,12 +347,13 @@ def main():
                 MessageHandler(filters.Regex("^Назад$"), back)
             ],
             CURRENT_TEMP_ONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sensor_id_input),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_current_temp_one_id_input),
                 MessageHandler(filters.Regex("^Назад$"), back)
             ],
             CONFIG: [
                 MessageHandler(filters.Regex("^3.1 Список датчиков$"), get_sensors_list),
                 MessageHandler(filters.Regex("^3.2 Добавить датчик$"), add_sensor),
+                MessageHandler(filters.Regex("^3.3 Удалить датчик$"), del_sensor_ip),
                 MessageHandler(filters.Regex("^Назад$"), back)
             ],
             ADD_SENSOR_IP: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_sensor_ip)],
@@ -283,7 +366,12 @@ def main():
             ADD_SENSOR_CONFIRM: [
                 MessageHandler(filters.Regex("^✅ Да$"), add_sensor_confirm),
                 MessageHandler(filters.Regex("^❌ Нет$"), cancel)
-                ]
+                ],
+            DEL_SENSOR_IP: [MessageHandler(filters.TEXT & ~filters.COMMAND, del_sensor_ip)],
+            DEL_SENSOR_CONFIRM: [
+                MessageHandler(filters.Regex("^✅ Да$"), del_sensor_confirm),
+                MessageHandler(filters.Regex("^❌ Нет$"), cancel)
+            ]
 
         },
         fallbacks=[CommandHandler("cancel", cancel)]
