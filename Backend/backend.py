@@ -224,15 +224,31 @@ async def get_sensors_list():
     """
     return CONFIG_DICT
 
-@api.get("/history/{ip}/{modbus_offset}")
-async def get_history_data(ip: str, modbus_offset: int):
+@api.get("/history/{ip}/{modbus_offset}/{period}")
+async def get_history_data(ip: str, modbus_offset: int, period: str):
     """
     Функция выбирает из БД исторические данные. По IP и MODBUS OFFSEET. Возвращает выборку (JSON).
     """
-    async with DB_POOL.acquire() as db_con:
+    intervals = {
+        'hour': ("1", "hour"),
+        '24_hours': ("24", "hour"),
+        'week': ("7", "day"),
+        'month': ("1", "month")
+    }
+    if period == "day":
         query = """SELECT software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value FROM historic_temperature
-                    WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2"""
+                    WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2 AND software_timestamp >= CURRENT_DATE
+                    ORDER BY software_timestamp DESC"""
         params = [ip, modbus_offset]
+    elif period in intervals:
+        query = """SELECT software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value FROM historic_temperature
+                    WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2 AND software_timestamp >= NOW() - (($3 || ' ' || $4)::interval)
+                    ORDER BY software_timestamp DESC"""
+        value, unit = intervals[period]
+        params = [ip, modbus_offset, value, unit]
+    else:
+        raise ValueError("Неопознаный период.")
+    async with DB_POOL.acquire() as db_con:
         result = await db_con.fetch(query, *params)
     return result
 
