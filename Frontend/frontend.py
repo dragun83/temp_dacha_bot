@@ -13,8 +13,14 @@
 
 import httpx
 import json
+from io import BytesIO
 
 import logging
+import plotly.graph_objects as go
+import plotly.io as pio
+pio.kaleido.scope.mathjax = None
+pio.renderers.default = 'png'
+
 from telegram import (
     Update,
     ReplyKeyboardMarkup
@@ -45,7 +51,7 @@ from telegram.ext import (
 ) = range(12)
 
 BACKEND_BASE_URL = "http://localhost:22222"
-TELEGRAM_TOKEN = ""
+TELEGRAM_TOKEN = "7582204566:AAHJZKOUcEzPiE03rH6rM9THWV7jrMEftwU"
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO) #Надо понизить уровень логирования.
 logger = logging.getLogger(__name__)
@@ -128,7 +134,7 @@ async def handle_current_temp_all(update: Update, context):
             )
     else:
         await update.message.reply_text(
-            "Не удалось получить данные!",
+            "❌ Не удалось получить данные!",
             reply_markup=main_menu_keyboard()
         )
     return MAIN_MENU
@@ -322,6 +328,33 @@ async def del_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return MAIN_MENU
     
+async def build_plot(raw_data, period, ip, modbus) -> BytesIO:
+    timestamps = [str(row.get('software_timestamp')) for row in raw_data]
+    values = [row.get('temperature_value') for row in raw_data]
+    
+    #print(f"Timestamps - {timestamps}||| Len = {len(timestamps)}")
+    #print(f"Values - {values} ||| Len = {len(values)}")
+
+    plot = go.Figure(data=go.Scatter(
+        x=timestamps,
+        y=values,
+        mode='lines+markers',
+        line=dict(color='firebrick', width=2),
+        marker=dict(size=8),
+        name='Температура (°C)'
+        ))
+    plot.update_layout(
+        title = "График температуры",
+        xaxis_title='Время',
+        yaxis_title='Температура (°C)',
+        template='plotly_white'
+        )
+    
+    file_name = f"plot_{period}_{ip}_{modbus}.html"
+    with open(file_name, 'w') as html_file:
+        plot.write_html(html_file)
+    return file_name
+    
 async def get_hist_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message.text
     if message == "2. История измерений":
@@ -329,6 +362,44 @@ async def get_hist_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введите адрес датчика в формате <IP адрес>:<modbus offset>. Например: 192.168.1.1:100",
         )
         return HISTORY_PERIOD
+    elif "." in message and ":" in message:
+        ip, modbus_offset = message.split(":")
+        context.user_data["history_period_ip"] = ip
+        context.user_data["history_period_modbus_offset"] = modbus_offset
+        await update.message.reply_text(
+            "Выберите период",
+            reply_markup=period_keyboard()
+        )
+        return HISTORY_PERIOD
+    elif message == "За последний час":
+        context.user_data["history_period"] = "hour"
+    elif message == "За последний день\n(с 0 часов)":
+        context.user_data["history_period"] = "day"
+    elif message == "За последние 24 часа":
+        context.user_data["history_period"] = "24_hours"
+    elif message == "За последнюю неделю":
+        context.user_data["history_period"] = "week"
+    elif message == "За последний месяц":
+        context.user_data["history_period"] = "month"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BACKEND_BASE_URL}/history/{context.user_data['history_period_ip']}/{context.user_data["history_period_modbus_offset"]}/{context.user_data["history_period"]}")
+    if response.status_code == 200:
+        
+        raw_data = response.json()
+        
+        report_name = await build_plot(raw_data, context.user_data['history_period'], context.user_data['history_period_ip'], context.user_data["history_period_modbus_offset"])
+
+        await update.message.reply_document(document=report_name, 
+                                         caption=f"График за {message}", 
+                                         reply_markup=main_menu_keyboard())
+        
+        return MAIN_MENU
+    else:
+        await update.message.reply_text(
+            "❌ Не удалось получить данные!",
+            reply_markup=MAIN_MENU
+        )
+        return MAIN_MENU
 
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -371,7 +442,8 @@ def main():
             DEL_SENSOR_CONFIRM: [
                 MessageHandler(filters.Regex("^✅ Да$"), del_sensor_confirm),
                 MessageHandler(filters.Regex("^❌ Нет$"), cancel)
-            ]
+            ],
+            HISTORY_PERIOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_hist_data)]
 
         },
         fallbacks=[CommandHandler("cancel", cancel)]

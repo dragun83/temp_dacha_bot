@@ -2,3 +2,8 @@
 $*
 .conf
 mytests*.py
+*.html
+*.htm
+*.png
+*.jpg
+*venv*
