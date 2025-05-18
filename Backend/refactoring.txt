@@ -1,0 +1,353 @@
+Для рефакторинга вашего кода я предлагаю разделить его на несколько модулей по функциональности. Вот как можно организовать структуру проекта:
+
+```
+project/
+├── config/
+│   ├── __init__.py
+│   ├── config_manager.py      # Работа с конфигурацией
+│   └── schemas.py            # Pydantic модели
+├── db/
+│   ├── __init__.py
+│   ├── database.py            # Функции работы с БД
+│   └── models.py              # Модели БД
+├── iot/
+│   ├── __init__.py
+│   └── modbus_client.py       # Работа с Modbus устройствами
+├── api/
+│   ├── __init__.py
+│   ├── endpoints.py           # FastAPI эндпоинты
+│   └── server.py              # Настройка FastAPI приложения
+└── main.py                    # Точка входа
+```
+
+Вот как можно разнести ваш код по этим модулям:
+
+1. **config/config_manager.py**:
+```python
+import json
+import os
+from typing import Dict, Any
+
+class ConfigManager:
+    def __init__(self, config_file_path: str):
+        self.config_file_path = config_file_path
+        self.config: Dict[str, Any] = {}
+
+    def validate_config(self) -> bool:
+        """Проверяет валидность конфигурационного файла"""
+        if not os.path.exists(self.config_file_path) or os.path.getsize(self.config_file_path) == 0:
+            return False
+        try:
+            with open(self.config_file_path, 'r') as config_file:
+                json.load(config_file)
+                return True
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+
+    def read_config(self) -> Dict[str, Any]:
+        """Читает конфиг из файла"""
+        with open(self.config_file_path, 'r') as config_file:
+            self.config = json.load(config_file)
+        return self.config
+
+    def write_config(self) -> bool:
+        """Записывает конфиг в файл"""
+        try:
+            with open(self.config_file_path, 'w') as config_file:
+                json.dump(self.config, config_file, indent=4)
+            return True
+        except Exception:
+            return False
+
+    def get_config(self) -> Dict[str, Any]:
+        """Возвращает текущую конфигурацию"""
+        return self.config
+
+    def update_config(self, new_config: Dict[str, Any]):
+        """Обновляет конфигурацию"""
+        self.config.update(new_config)
+```
+
+2. **db/database.py**:
+```python
+import asyncpg
+from datetime import datetime
+
+class DatabaseManager:
+    def __init__(self):
+        self.pool = None
+
+    async def connect(self, db_params: dict):
+        """Создает пул соединений с БД"""
+        self.pool = await asyncpg.create_pool(
+            host=db_params.get("db_host"),
+            database=db_params.get("db_name"),
+            user=db_params.get("db_user"),
+            password=db_params.get("db_password"),
+            min_size=1,
+            max_size=10
+        )
+
+    async def save_operational_data(self, data_dict: dict):
+        """Сохраняет оперативные данные в БД"""
+        async with self.pool.acquire() as connection:
+            data_to_insert = []
+            for sensor_ip in data_dict.keys():
+                for modbus_offset in data_dict.get(sensor_ip).keys():
+                    for timestamp, temperature_value in data_dict.get(sensor_ip).get(modbus_offset).items():
+                        data_to_insert.append((
+                            datetime.fromtimestamp(timestamp), 
+                            sensor_ip, 
+                            modbus_offset, 
+                            temperature_value
+                        ))
+            
+            if data_to_insert:                    
+                await connection.executemany('''
+                    INSERT INTO historic_temperature 
+                    (software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value)
+                    VALUES ($1, $2, $3, $4)
+                ''', data_to_insert)
+
+    async def get_history_data(self, ip: str, modbus_offset: int, period: str):
+        """Получает исторические данные из БД"""
+        intervals = {
+            'hour': ("1", "hour"),
+            '24_hours': ("24", "hour"),
+            'week': ("7", "day"),
+            'month': ("1", "month")
+        }
+        
+        if period == "day":
+            query = """SELECT software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value 
+                       FROM historic_temperature
+                       WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2 AND software_timestamp >= CURRENT_DATE
+                       ORDER BY software_timestamp DESC"""
+            params = [ip, modbus_offset]
+        elif period in intervals:
+            query = """SELECT software_timestamp, sensor_ip_address, sensor_modbus_offset, temperature_value 
+                       FROM historic_temperature
+                       WHERE sensor_ip_address = $1 AND sensor_modbus_offset = $2 
+                       AND software_timestamp >= NOW() - (($3 || ' ' || $4)::interval)
+                       ORDER BY software_timestamp DESC"""
+            value, unit = intervals[period]
+            params = [ip, modbus_offset, value, unit]
+        else:
+            raise ValueError("Неопознаный период.")
+        
+        async with self.pool.acquire() as db_con:
+            return await db_con.fetch(query, *params)
+```
+
+3. **iot/modbus_client.py**:
+```python
+from pymodbus.client import AsyncModbusTcpClient
+from pymodbus import exceptions as py_exceptions
+import asyncio
+import time
+
+class ModbusClient:
+    def __init__(self, config: dict):
+        self.config = config
+        self.data_dict = {}
+        self.last_data_dict = {}
+
+    async def measure_temperature(self):
+        """Опрашивает датчики по MODBUS"""
+        while True:
+            if self.config.get("modbus_sensors"):
+                for sensor_ip, sensor_config in self.config.get("modbus_sensors").items():
+                    if sensor_config.get("active"):
+                        await self._read_sensor(sensor_ip, sensor_config)
+                await asyncio.sleep(self.config['modbus_parameters']['query_freq'])
+
+    async def _read_sensor(self, sensor_ip: str, sensor_config: dict):
+        """Читает данные с одного датчика"""
+        try:
+            async with AsyncModbusTcpClient(
+                host=sensor_ip,
+                port=sensor_config["tcp_port"],
+                timeout=self.config["modbus_parameters"]["read_timeout"]
+            ) as connection:
+                
+                for modbus_offset in sensor_config["modbus_offsets"]:
+                    response = await connection.read_holding_registers(
+                        address=modbus_offset,
+                        count=2,
+                        slave=1
+                    )
+                    temperature = connection.convert_from_registers(
+                        response.registers,
+                        data_type=connection.DATATYPE.FLOAT32,
+                        word_order='little'
+                    )
+                    self._update_data_dicts(sensor_ip, modbus_offset, temperature)
+                    
+        except (py_exceptions.ConnectionException, py_exceptions.ModbusIOException):
+            print(f"Ошибка подключения к датчику {sensor_ip}")
+
+    def _update_data_dicts(self, sensor_ip: str, modbus_offset: int, temperature: float):
+        """Обновляет словари с данными"""
+        timestamp = time.time()
+        self.data_dict.setdefault(sensor_ip, {}).setdefault(modbus_offset, {}).update({timestamp: temperature})
+        self.last_data_dict.setdefault(sensor_ip, {}).setdefault(modbus_offset, {}).update(
+            {"last_temperature_value": temperature}
+        )
+        print(f"Показания датчика IP: {sensor_ip} MODBUS OFFSET: {modbus_offset} - {temperature}")
+```
+
+4. **api/endpoints.py**:
+```python
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from typing import Dict, Any
+
+router = APIRouter()
+
+class SensorConfig(BaseModel):
+    active: bool
+    ip_address: str
+    tcp_port: int
+    modbus_offsets: list
+
+@router.get("/")
+async def api_test():
+    return {"message": "It is working!"}
+
+@router.get("/oper")
+async def get_oper_data(data_dict: Dict[str, Any] = Depends(get_data_dict)):
+    return data_dict
+
+@router.get("/current_temp/")
+async def get_current_temp(last_data_dict: Dict[str, Any] = Depends(get_last_data_dict)):
+    return last_data_dict
+
+@router.post("/sensor/")
+async def add_sensor(
+    sensor: SensorConfig,
+    config_manager=Depends(get_config_manager)
+):
+    config = config_manager.get_config()
+    config.setdefault("modbus_sensors", {})[sensor.ip_address] = {
+        "active": sensor.active,
+        "tcp_port": sensor.tcp_port,
+        "modbus_offsets": sensor.modbus_offsets
+    }
+    config_manager.update_config(config)
+    return {"message": "Sensor added"}
+
+@router.delete("/sensor/{ip_address}")
+async def remove_sensor(
+    ip_address: str,
+    config_manager=Depends(get_config_manager)
+):
+    deleted_sensor = config_manager.get_config()["modbus_sensors"].pop(ip_address)
+    return {"message": f"Датчик {deleted_sensor} был удален"}
+```
+
+5. **api/server.py**:
+```python
+from fastapi import FastAPI
+from .endpoints import router as api_router
+from db.database import DatabaseManager
+from iot.modbus_client import ModbusClient
+from config.config_manager import ConfigManager
+import uvicorn
+import asyncio
+
+def create_app(config_manager: ConfigManager) -> FastAPI:
+    app = FastAPI()
+    app.include_router(api_router)
+    
+    db_manager = DatabaseManager()
+    modbus_client = ModbusClient(config_manager.get_config())
+    
+    @app.on_event("startup")
+    async def startup_event():
+        config = config_manager.get_config()
+        await db_manager.connect(config["db_params"])
+        asyncio.create_task(modbus_client.measure_temperature())
+        asyncio.create_task(_save_data_periodically(db_manager, modbus_client, config))
+    
+    return app
+
+async def _save_data_periodically(db_manager, modbus_client, config):
+    while True:
+        await db_manager.save_operational_data(modbus_client.data_dict)
+        modbus_client.data_dict.clear()
+        await asyncio.sleep(config["db_params"]["db_write_period"])
+
+def run_server(app: FastAPI, host: str, port: int):
+    uvicorn.run(app, host=host, port=port)
+```
+
+6. **main.py**:
+```python
+import argparse
+from config.config_manager import ConfigManager
+from api.server import create_app, run_server
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Backend service for home automation")
+    # ... (все аргументы как у вас было)
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    config_manager = ConfigManager(args.config_file)
+    
+    if args.init:
+        config = {
+            'api_server': {
+                'server_address': args.api_host,
+                'server_port': args.api_port
+            },
+            'modbus_parameters': {
+                'query_freq': args.modbus_query_freq,
+                'read_timeout': args.modbus_conn_timeout
+            },
+            'db_params': {
+                'db_host': args.db_host,
+                'db_name': args.db_name,
+                'db_user': args.db_user,
+                'db_password': args.db_password,
+                'db_write_period': args.db_write_period
+            }
+        }
+        config_manager.update_config(config)
+    elif not config_manager.validate_config():
+        raise FileExistsError(f"Файл {args.config_file} не существует или поврежден.")
+    else:
+        config_manager.read_config()
+    
+    app = create_app(config_manager)
+    config = config_manager.get_config()
+    
+    try:
+        run_server(
+            app,
+            host=config['api_server']['server_address'],
+            port=config['api_server']['server_port']
+        )
+    finally:
+        config_manager.write_config()
+
+if __name__ == "__main__":
+    main()
+```
+
+Основные преимущества такого подхода:
+
+1. **Разделение ответственности** - каждая часть системы в своем модуле
+2. **Упрощение тестирования** - модули можно тестировать независимо
+3. **Улучшение читаемости** - код организован логически
+4. **Гибкость** - легче вносить изменения в отдельные компоненты
+5. **Масштабируемость** - проще добавлять новую функциональность
+
+Для полной реализации вам нужно будет:
+1. Добавить dependency injection для передачи конфигурации и менеджеров
+2. Реализовать обработку ошибок в каждом модуле
+3. Добавить логирование
+4. Написать тесты для каждого модуля
+
+Такой подход соответствует принципам чистой архитектуры и облегчит дальнейшую поддержку и развитие проекта.
