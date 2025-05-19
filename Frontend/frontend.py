@@ -1,14 +1,5 @@
 #!/bin/python
 # Frontend application
-# TODO: +Реализовать базовый функционал бота
-# TODO: +Реализовать функционал обращения к API backend
-# TODO: +Реализовать получение текущей температуры со всех датчиков
-# TODO: +Реализовать получение информации о конфигурации датчиков
-# TODO: +Реализовать добавление и изменение датчиков
-# TODO: +Реализовать получение текущей температуры с одного датчика
-# TODO: Реализовать получение исторических данных с конкретного датчика 
-#       за фиксированные промежутки (последний час, последнийе сутки, последняя неделя, последний месяц)
-# TODO: +Реализовать удалени датчиков по IP
 # TODO: Реализовать хранение данных о конматах и привязку датчиков к комнатах.
 
 import logging
@@ -317,9 +308,6 @@ async def del_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def build_plot(raw_data, period, ip, modbus):
     timestamps = [str(row.get('software_timestamp')) for row in raw_data]
     values = [row.get('temperature_value') for row in raw_data]
-    
-    #print(f"Timestamps - {timestamps}||| Len = {len(timestamps)}")
-    #print(f"Values - {values} ||| Len = {len(values)}")
 
     plot = go.Figure(data=go.Scatter(
         x=timestamps,
@@ -329,6 +317,7 @@ async def build_plot(raw_data, period, ip, modbus):
         marker=dict(size=8),
         name='Температура (°C)'
         ))
+
     plot.update_layout(
         title = "График температуры",
         xaxis_title='Время',
