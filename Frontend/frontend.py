@@ -1,19 +1,6 @@
 #!/bin/python
 # Frontend application
-# TODO: +Реализовать базовый функционал бота
-# TODO: +Реализовать функционал обращения к API backend
-# TODO: +Реализовать получение текущей температуры со всех датчиков
-# TODO: +Реализовать получение информации о конфигурации датчиков
-# TODO: +Реализовать добавление и изменение датчиков
-# TODO: +Реализовать получение текущей температуры с одного датчика
-# TODO: Реализовать получение исторических данных с конкретного датчика 
-#       за фиксированные промежутки (последний час, последнийе сутки, последняя неделя, последний месяц)
-# TODO: +Реализовать удалени датчиков по IP
 # TODO: Реализовать хранение данных о конматах и привязку датчиков к комнатах.
-
-import httpx
-import json
-from io import BytesIO
 
 import logging
 import plotly.graph_objects as go
@@ -35,6 +22,10 @@ from telegram.ext import (
     ContextTypes
 )
 
+from frontend_api import APIClient
+
+api_client = APIClient('http://localhost:22222')
+
 (
     MAIN_MENU,
     CURRENT_TEMP_ALL,
@@ -50,8 +41,8 @@ from telegram.ext import (
     DEL_SENSOR_CONFIRM
 ) = range(12)
 
-BACKEND_BASE_URL = "http://localhost:22222"
-TELEGRAM_TOKEN = "7582204566:AAHJZKOUcEzPiE03rH6rM9THWV7jrMEftwU"
+
+TELEGRAM_TOKEN = "7582204566:AAFnocRuBz9OoMRiDoFg5olHhOYdmt2I7R4"
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO) #Надо понизить уровень логирования.
 logger = logging.getLogger(__name__)
@@ -115,12 +106,14 @@ async def current_temp_menu(update: Update, context):
     return CURRENT_TEMP_ALL 
 
 async def handle_current_temp_all(update: Update, context):
-    async with httpx.AsyncClient() as api_client:
-        response = await api_client.get(BACKEND_BASE_URL + "/current_temp/")
-
-    if response.status_code == 200:
-        
-        data = response.json()
+    """
+    Обработчик сообщения о получении всех текущих температур.
+    Получает из API  словарь с температурой и формирует и отправляет сообщение с информацией 
+    В случае неудачи - отправляет сообщение об ошибке
+    В любом случае - возвращает пользователя в главное меню
+    """
+    data = await api_client.get_all_current_temp()
+    if data is not None:
         answer = ""
         for ip_address in data.keys():
             answer += f"IP адрес : {ip_address}:\n"
@@ -140,10 +133,17 @@ async def handle_current_temp_all(update: Update, context):
     return MAIN_MENU
 
 async def handle_current_temp_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Хендлер ввода даных о датчике с котрого мы хотим получить текущие показания
+    """
     await update.message.reply_text("Введите IP датчика и modbus offset через \":\"")
     return CURRENT_TEMP_ONE
 
 async def handle_current_temp_one_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Хендлер сообщения о получении данных с конкретного датчика. Получает данные из api и формирует и отправляет сообщение. 
+    В случае неудачи - формирует сообщение об ошибке. Возвращает пользователя в главное меню.
+    """
     try:
         ip, modbus_offset = update.message.text.strip().split(':')
     except ValueError:
@@ -152,22 +152,13 @@ async def handle_current_temp_one_id_input(update: Update, context: ContextTypes
                 reply_markup=main_menu_keyboard()
             )
         return MAIN_MENU
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url=f"{BACKEND_BASE_URL}/current_temp/")
-    if response.status_code == 200:
-        temp_value = response.json().get(ip, {}).get(modbus_offset, {}).get('last_temperature_value')
-        if temp_value is not None:
-            await update.message.reply_text(
-                f"🌡 Показания датчика {ip}:{modbus_offset} = {temp_value} ℃",
-                reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
-        else:
-            await update.message.reply_text(
-                f"⚠️ Показания датчика {ip}:{modbus_offset} не найдены. ⚠️ ",
-                reply_markup=main_menu_keyboard()
-            )
-            return MAIN_MENU
+    temp_value = await api_client.get_current_temp(ip, modbus_offset)
+    if temp_value is not None:
+        await update.message.reply_text(
+            f"🌡 Показания датчика {ip}:{modbus_offset} = {temp_value} ℃",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
     else:
         await update.message.reply_text(
             f"❌ Возникла ошибка при получении данных",
@@ -198,10 +189,8 @@ async def config_menu(update: Update, context):
     return CONFIG
 
 async def get_sensors_list(update: Update, context):
-    async with httpx.AsyncClient() as client:
-        api_response = await client.get(BACKEND_BASE_URL + "/config/")
-    if api_response.status_code == 200:
-        config = api_response.json()
+    config = await api_client.get_config()
+    if config is not None:
         answer = "Список сенсоров в системе: \n\n"
         for sensor_ip in config.get("modbus_sensors").keys():
             answer += f"Сенсор {sensor_ip} :\n"
@@ -267,16 +256,7 @@ async def add_sensor_activity(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ADD_SENSOR_CONFIRM
 
 async def add_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    async with httpx.AsyncClient() as client:
-        post_data = {
-              "active": context.user_data['sensor_activity'],
-              "ip_address": context.user_data['ip'],
-              "tcp_port": context.user_data['port'],
-              "modbus_offsets": context.user_data['modbus_offsets']
-        }
-        print(json.dumps(post_data, indent=4))
-        response = await client.post(BACKEND_BASE_URL + "/sensor/", data=json.dumps(post_data))
-    if response.status_code == 200: 
+    if await api_client.add_sensor(context.user_data['sensor_activity'], context.user_data['ip'], context.user_data['port'], context.user_data['modbus_offsets']): 
         await update.message.reply_text(
             f"✅ Датчик {context.user_data['ip']} успешно добавлен!",
         reply_markup=main_menu_keyboard()
@@ -312,28 +292,22 @@ async def del_sensor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """
     Функция вызывается после подтверждения удаления датчика. Выполняет API запрос для удаления датчика и возвращает нас в Главное Меню.
     """
-    ip = context.user_data['del_ip']
-    async with httpx.AsyncClient() as client:
-        response = await client.delete(url=f"{BACKEND_BASE_URL}/sensor/{ip}")
-    if response.status_code == 200:
+    if await api_client.del_sensor(context.user_data['del_ip']):
         await update.message.reply_text(
-            f"🗑️ Датчик {ip} успешно  удален.",
+            f"🗑️ Датчик {context.user_data['del_ip']} успешно  удален.",
             reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
     else:
         await update.message.reply_text(
-            f"❌ При удалении датчика {ip} возникла ошибка.",
+            f"❌ При удалении датчика {context.user_data['del_ip']} возникла ошибка.",
             reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
     
-async def build_plot(raw_data, period, ip, modbus) -> BytesIO:
+async def build_plot(raw_data, period, ip, modbus):
     timestamps = [str(row.get('software_timestamp')) for row in raw_data]
     values = [row.get('temperature_value') for row in raw_data]
-    
-    #print(f"Timestamps - {timestamps}||| Len = {len(timestamps)}")
-    #print(f"Values - {values} ||| Len = {len(values)}")
 
     plot = go.Figure(data=go.Scatter(
         x=timestamps,
@@ -343,6 +317,7 @@ async def build_plot(raw_data, period, ip, modbus) -> BytesIO:
         marker=dict(size=8),
         name='Температура (°C)'
         ))
+
     plot.update_layout(
         title = "График температуры",
         xaxis_title='Время',
@@ -381,14 +356,10 @@ async def get_hist_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["history_period"] = "week"
     elif message == "За последний месяц":
         context.user_data["history_period"] = "month"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{BACKEND_BASE_URL}/history/{context.user_data['history_period_ip']}/{context.user_data["history_period_modbus_offset"]}/{context.user_data["history_period"]}")
-    if response.status_code == 200:
-        
-        raw_data = response.json()
-        
+    ### Тут
+    raw_data = await api_client.get_historyc_data(context.user_data['history_period_ip'], context.user_data["history_period_modbus_offset"], context.user_data["history_period"])
+    if raw_data is not None:
         report_name = await build_plot(raw_data, context.user_data['history_period'], context.user_data['history_period_ip'], context.user_data["history_period_modbus_offset"])
-
         await update.message.reply_document(document=report_name, 
                                          caption=f"График за {message}", 
                                          reply_markup=main_menu_keyboard())
